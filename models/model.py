@@ -155,41 +155,26 @@ class CryptoPricePredictor:
 
         return self.total_candlestick_df[self.feature_columns].iloc[[-1]]
     
-    def update_model(self, train_data):
-        """Update the model with new data"""
+    def update_model(self):
+        """Update the model with the latest data in self.total_candlestick_df"""
         # If there is no data, no need to update the model
-        if train_data is None:
+        if self.total_candlestick_df is None:
             return
         
-        # Process the data to create features
-        # First, convert the DataFrame to the format expected by process_data
-        # The process_data method expects a list of lists with orderbook data
-        # We need to convert our DataFrame to this format
-        orderbook_data = []
-        for _, row in train_data.iterrows():
-            orderbook_row = [row.name]  # COLLECTION_TIME
-            for i in range(1, 12):
-                orderbook_row.extend([
-                    row.get(f'BID_PRICE_{i}', 0),
-                    row.get(f'BID_SIZE_{i}', 0),
-                    row.get(f'ASK_PRICE_{i}', 0),
-                    row.get(f'ASK_SIZE_{i}', 0)
-                ])
-            orderbook_data.append(orderbook_row)
-        
-        # Now process the data
-        processed_data = self.process_data(orderbook_data)
+        # Use the latest data to update the model
+        df = self.total_candlestick_df.copy()
+        df.dropna(inplace=True)
         
         # Prepare features and target
-        X = processed_data[self.feature_columns]
-        y = processed_data['close'].shift(-1).fillna(method='ffill')  # Use next close price as target
+        X = df[self.feature_columns]
+        y = df['close'].shift(-1).fillna(method='ffill')
         
         # Remove rows with NaN values
         mask = ~y.isna()
         X = X[mask]
         y = y[mask]
         
-        # Define parameter grid for hyperparameter tuning
+        # Perform hyperparameter tuning
         param_grid = {
             'n_estimators': [500, 1000],
             'max_depth': [6, 8, 10],
@@ -200,11 +185,10 @@ class CryptoPricePredictor:
             'reg_lambda': [1, 1.5, 2],
         }
         
-        # Perform randomized search for hyperparameter tuning
         random_search = RandomizedSearchCV(
             estimator=self.model,
             param_distributions=param_grid,
-            n_iter=10,  # Reduced for faster training
+            n_iter=10,
             scoring='neg_mean_squared_error',
             cv=5,
             verbose=1,
@@ -212,16 +196,16 @@ class CryptoPricePredictor:
             n_jobs=-1
         )
         
-        # Fit the model
         random_search.fit(X, y)
         self.model = random_search.best_estimator_
         
-        # Save the model if path is provided
+        # Save the model if a path is provided
         if self.model_path is not None:
             self.model.save_model(self.model_path)
             print(f"Model saved to {self.model_path}")
     
     def predict(self, X):
+        """Make predictions using the trained model"""
         # Convert the DataFrame to the format expected by process_data
         orderbook_data = []
         for _, row in X.iterrows():
@@ -237,5 +221,7 @@ class CryptoPricePredictor:
         
         # Process the data
         df = self.process_data(orderbook_data)
+        
+        # Make predictions
         y = self.model.predict(df[self.feature_columns])
         return y 

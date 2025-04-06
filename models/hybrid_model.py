@@ -15,6 +15,23 @@ from tensorflow.keras.optimizers import Adam
 class HybridStockPredictor:
     def __init__(self, xgb_model_path: str = None, lstm_model_path: str = None):
         """Initialize the hybrid predictor with XGBoost and LSTM components"""
+        # Feature engineering parameters
+        self.window_length = 20
+        self.rolling_window = 20
+        self.resample_interval = '500L'
+        self.lag_periods = 3
+        self.ema_spans = [3, 5, 8]
+        self.forecast_horizon = 1
+        self.feature_columns = [
+            'open', 'high', 'low', 'close', 'avg_total_size', 'spread', 'ob_imbalance',
+            'rolling_mean', 'rolling_std', 'rolling_min', 'rolling_max',
+            'rolling_spread_mean', 'rolling_spread_std',
+            'rolling_ob_imbalance_mean', 'rolling_ob_imbalance_std',
+            'lag_close_1', 'lag_close_2', 'lag_close_3',
+            'ema_close_3', 'ema_close_5', 'ema_close_8',
+            'rsi', 'macd', 'macd_signal', 'macd_hist'
+        ]
+        
         # Initialize XGBoost model with default parameters
         self.xgb_model = xgb.XGBRegressor(
             objective='reg:squarederror',
@@ -39,23 +56,6 @@ class HybridStockPredictor:
             self.load_xgb_model(xgb_model_path)
         if lstm_model_path is not None:
             self.load_lstm_model(lstm_model_path)
-        
-        # Feature engineering parameters
-        self.window_length = 20
-        self.rolling_window = 20
-        self.resample_interval = '500L'
-        self.lag_periods = 3
-        self.ema_spans = [3, 5, 8]
-        self.forecast_horizon = 1
-        self.feature_columns = [
-            'open', 'high', 'low', 'close', 'avg_total_size', 'spread', 'ob_imbalance',
-            'rolling_mean', 'rolling_std', 'rolling_min', 'rolling_max',
-            'rolling_spread_mean', 'rolling_spread_std',
-            'rolling_ob_imbalance_mean', 'rolling_ob_imbalance_std',
-            'lag_close_1', 'lag_close_2', 'lag_close_3',
-            'ema_close_3', 'ema_close_5', 'ema_close_8',
-            'rsi', 'macd', 'macd_signal', 'macd_hist'
-        ]
         
         # The total candlestick_df is the cumulative data of orderbook
         self.total_candlestick_df = None
@@ -179,26 +179,14 @@ class HybridStockPredictor:
         self.total_candlestick_df['macd_signal'] = self.total_candlestick_df['macd'].ewm(span=9, adjust=False).mean()
         self.total_candlestick_df['macd_hist'] = self.total_candlestick_df['macd'] - self.total_candlestick_df['macd_signal']
     
-    def update_model(self, train_data=None, **kwargs):
-        """Update both XGBoost and LSTM models with new data"""
-        if train_data is None:
+    def update_model(self):
+        """Update both XGBoost and LSTM models with the latest data in self.total_candlestick_df"""
+        # If there is no data, no need to update the model
+        if self.total_candlestick_df is None:
             return
         
-        # Convert the DataFrame to the format expected by process_data
-        orderbook_data = []
-        for _, row in train_data.iterrows():
-            orderbook_row = [row.name]  # COLLECTION_TIME
-            for i in range(1, 12):
-                orderbook_row.extend([
-                    row.get(f'BID_PRICE_{i}', 0),
-                    row.get(f'BID_SIZE_{i}', 0),
-                    row.get(f'ASK_PRICE_{i}', 0),
-                    row.get(f'ASK_SIZE_{i}', 0)
-                ])
-            orderbook_data.append(orderbook_row)
-        
-        # Process the data
-        df = self.process_data(orderbook_data)
+        # Use the latest data to update the model
+        df = self.total_candlestick_df.copy()
         df.dropna(inplace=True)
         
         # Prepare features and target
@@ -228,8 +216,15 @@ class HybridStockPredictor:
             'reg_lambda': [1, 1.5, 2],
         }
         
+        # Create a new XGBoost model for each iteration
+        xgb_model = xgb.XGBRegressor(
+            objective='reg:squarederror',
+            random_state=42
+        )
+        
+        # Perform randomized search for hyperparameter tuning
         random_search = RandomizedSearchCV(
-            estimator=self.xgb_model,
+            estimator=xgb_model,
             param_distributions=param_grid,
             n_iter=10,
             scoring='neg_mean_squared_error',
@@ -239,6 +234,7 @@ class HybridStockPredictor:
             n_jobs=-1
         )
         
+        # Fit the model without early_stopping_rounds parameter
         random_search.fit(X, y)
         self.xgb_model = random_search.best_estimator_
         
@@ -250,6 +246,11 @@ class HybridStockPredictor:
         # Prepare sequences for LSTM
         X_seq = []
         y_seq = []
+        # Make sure we have enough data for the window length
+        if len(X) <= self.window_length:
+            print(f"Not enough data for LSTM training. Need at least {self.window_length+1} samples, but got {len(X)}")
+            return
+            
         for i in range(len(X) - self.window_length):
             X_seq.append(X.iloc[i:(i + self.window_length)].values)
             y_seq.append(y.iloc[i + self.window_length])
@@ -292,6 +293,11 @@ class HybridStockPredictor:
         
         # Prepare sequences for LSTM
         X_seq = []
+        # Check if we have enough data for LSTM prediction
+        if len(df) < self.window_length:
+            print(f"Warning: Not enough data for LSTM prediction, returning XGBoost prediction only")
+            return xgb_pred
+            
         for i in range(len(df) - self.window_length + 1):
             X_seq.append(df[self.feature_columns].iloc[i:(i + self.window_length)].values)
         X_seq = np.array(X_seq)
