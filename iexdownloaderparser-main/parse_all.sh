@@ -22,7 +22,7 @@ do
 	pcap_date=$(echo $pcap | sed -r 's/.*data_feeds_(.*)_(.*)_IEXTP.*/\1/')
 	echo "PCAP_FILE=$pcap PCAP_DATE=$pcap_date"
 	#gunzip -d -c $pcap | tcpdump -r - -w - -s 0 | $PYTHON_INTERP src/parse_iex_pcap.py /dev/stdin --symbols SPY
-	gunzip -d -c $pcap | tcpdump -r - -w - -s 0 | $PYTHON_INTERP src/parse_iex_pcap.py /dev/stdin --symbols GBTC --trade-date $pcap_date --output-deep-books-too
+	gunzip -d -c $pcap | tcpdump -r - -w - -s 0 | $PYTHON_INTERP src/parse_iex_pcap.py /dev/stdin --symbols AAPL --trade-date $pcap_date --output-deep-books-too
 
 done;
 
